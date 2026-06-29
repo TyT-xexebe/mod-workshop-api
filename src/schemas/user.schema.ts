@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ROLES } from "../config/constants.js";
+import { mongoIdRegex } from "../config/constants.js";
 
 export const registerSchema = z.object({
   body: z.object({
@@ -50,9 +51,22 @@ export const updateUserSchema = z.object({
 
 export const getUserIdSchema = z.object({
   params: z.object({
-    id: z.string().regex(/^[0-9a-fA-F]{24}$/, "invalid user id format"),
+    id: z.string().regex(mongoIdRegex, "invalid user id format"),
   }),
 });
 
 export type UpdateUserInput = z.infer<typeof updateUserSchema>["body"];
 export type UserInput = z.infer<typeof userSchema>;
+
+export const updateRoleSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid user id format"),
+  }),
+  body: z
+    .object({
+      role: z.enum(ROLES),
+    })
+    .strict(),
+});
+
+export type UpdateRoleInput = z.infer<typeof updateRoleSchema>["body"];

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MOD_TAGS } from "../config/constants.js";
+import { mongoIdRegex } from "../config/constants.js";
 
 const modBodySchema = z.object({
   title: z.string().min(3, "title too short").max(50, "title too long"),
@@ -26,7 +27,7 @@ export type PatchModInput = z.infer<typeof patchModSchema>["body"];
 
 export const getModIdSchema = z.object({
   params: z.object({
-    id: z.string().regex(/^[0-9a-fA-F]{24}$/),
+    id: z.string().regex(mongoIdRegex, "invalid mod id format"),
   }),
 });
 

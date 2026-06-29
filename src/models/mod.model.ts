@@ -8,7 +8,8 @@ export interface IMod {
   author: Types.ObjectId;
   tags: ModTag[];
   fileUrl: string;
-  downloads: number;
+  downloads: Number;
+  likesCount: Number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -22,6 +23,7 @@ const modSchema = new Schema<IMod>(
     tags: { type: [String], enum: MOD_TAGS, default: [] },
     fileUrl: { type: String, required: true },
     downloads: { type: Number, default: 0 },
+    likesCount: { type: Number, default: 0 },
   },
   { timestamps: true },
 );

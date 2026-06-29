@@ -1,6 +1,6 @@
 # workshop-api
 
-A production-ready RESTful API backend for a game modification platform, built with Node.js, Express, TypeScript, and MongoDB. The system includes strict input validation, token-based authentication, role-based authorization, rate-limiting for auth endpoints, and safe file management.
+A production-ready RESTful API backend for a game modification platform, built with Node.js, Express, TypeScript, and MongoDB. The system includes strict input validation, token-based authentication, role-based authorization, rate-limiting, and safe file management.
 
 ---
 
@@ -47,26 +47,36 @@ npm install
 ### Running the Application
 
 * **Development Mode (with hot-reload):**
+
 ```bash
 npm run dev
 
 ```
 
-
 * **Production Build:**
+
 ```bash
 npm run build
 
 ```
 
-
 * **Production Run:**
+
 ```bash
 npm start
 
 ```
 
+---
 
+## Rate-Limiting Policies
+
+The application enforces differential rate limits via dedicated middlewares to protect against spam and brute-force attacks:
+
+* **Global Limiter (`globalLimiter`):** Max 300 requests per 15 minutes per IP. Applied globally to all `/api/*` routes. Returns error code `TOO_MANY_REQUESTS`.
+* **Auth Limiter (`authLimiter`):** Max 15 requests per 15 minutes per IP. Applied to authentication endpoints. Returns error code `AUTH_LIMIT_EXCEEDED`.
+* **Spam Limiter (`spamLimiter`):** Max 20 requests per 1 minute per IP. Applied to sensitive actions like profile modifications, liking, and commenting. Returns error code `SPAM_PROTECTION`.
+* **Upload Limiter (`uploadLimiter`):** Max 5 requests per 15 minutes per IP. Applied to mod creation and updates. Returns error code `UPLOAD_LIMIT_EXCEEDED`.
 
 ---
 
@@ -100,6 +110,34 @@ npm start
   tags: string[];       // Array of enums: "content" | "script" | "UI" | "qol" | "java" | "soundpack" | "texturepack"
   fileUrl: string;      // Required, file path on disk
   downloads: number;    // Default: 0
+  likesCount: number;   // Default: 0
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+```
+
+### Like Schema
+
+```typescript
+{
+  userId: ObjectId;     // Reference to User model, required, Compound unique index
+  modId: ObjectId;      // Reference to Mod model, required, Compound unique index
+  createdAt: Date;      // Automatically managed timestamp
+}
+
+```
+
+### Comment Schema
+
+```typescript
+{
+  _id: ObjectId;
+  modId: ObjectId;      // Reference to Mod model, required
+  userId: ObjectId;     // Reference to User model, required
+  text: string;         // Required, trimmed, 1-500 characters
+  parentId: ObjectId;   // Reference to Comment model for threading, default null for root comment
+  replyTo: ObjectId;    // Reference to User model, optional
   createdAt: Date;
   updatedAt: Date;
 }
@@ -111,7 +149,7 @@ npm start
 ## File Upload Specifications
 
 * **Allowed Extensions:** `.jar`, `.zip`, `.js`
-* **Maximum File Size:** 50MB
+* **Maximum File Size:** 50MB (`50 * 1024 * 1024` bytes)
 * **Storage Location:** Local `./uploads` directory
 
 ---
@@ -120,56 +158,75 @@ npm start
 
 ### Utility Endpoints
 
-| Method | Endpoint | Description | Auth Required | Expected Response |
-| --- | --- | --- | --- | --- |
-| `GET` | `/ping` | Health check endpoint | No | `200 OK` -> `{ "answer": "pong" }` |
+| Method | Endpoint | Description | Auth Required | Rate Limiter | Expected Response |
+| --- | --- | --- | --- | --- | --- |
+| `GET` | `/api/ping` | Health check endpoint | No | `globalLimiter` | `200 OK` -> `{ "answer": "pong" }` |
 
-### Authentication (`/auth`)
+### Authentication (`/api/auth`)
 
-*Rate-limiting policy: Maximum of 20 requests per 15 minutes per IP.*
+| Method | Endpoint | Request Payload / Zod Validation | Auth Required | Rate Limiter | Expected Response (Success) |
+| --- | --- | --- | --- | --- | --- |
+| `POST` | `/api/auth/register` | **Body:** `{ username (3-20), email, password (min 6) }` | No | `authLimiter` | `201 Created` + User configuration data (excludes password) |
+| `POST` | `/api/auth/login` | **Body:** `{ email, password (min 6) }` | No | `authLimiter` | `200 OK` + JWT Token and User parameters |
 
-| Method | Endpoint | Request Payload | Auth Required | Expected Response (Success) |
-| --- | --- | --- | --- | --- |
-| `POST` | `/auth/register` | JSON: `{ username, email, password }` | No | `201 Created` + User summary data |
-| `POST` | `/auth/login` | JSON: `{ email, password }` | No | `200 OK` + JWT Token and User info |
+### User Management (`/api/users`)
 
-### User Management (`/users`)
+| Method | Endpoint | Request Payload / Params Validation | Auth Required | Rate Limiter | Expected Response (Success) |
+| --- | --- | --- | --- | --- | --- |
+| `GET` | `/api/users/me` | None | JWT | `globalLimiter` | `200 OK` + Current user profile |
+| `PATCH` | `/api/users/me` | **Body (Strict):** `{ username?, description?, email? }` | JWT | `spamLimiter` | `200 OK` + Updated user profile data |
+| `GET` | `/api/users/:id` | **Params:** `id` (24-char Hex ObjectId) | No | `globalLimiter` | `200 OK` + Public user profile |
+| `GET` | `/api/users/:id/mods` | **Params:** `id` (24-char Hex ObjectId) <br>
 
-| Method | Endpoint | Request Payload / Params | Auth Required | Expected Response (Success) |
-| --- | --- | --- | --- | --- |
-| `GET` | `/users/me` | None | JWT | `200 OK` + Current user profile (excludes password hash) |
-| `PATCH` | `/users/me` | JSON: `{ username?, description?, email? }` (Strict) | JWT | `200 OK` + Updated profile data |
-| `GET` | `/users/:id` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` + Public user profile |
-| `GET` | `/users/:id/mods` | Params: `id` <br>
+<br> **Query:** `?page=&limit=&sort=&tag=&search=` | No | `globalLimiter` | `200 OK` + Paginated mods created by this user |
+| `PATCH` | `/api/users/:id/role` | **Params:** `id` <br>
 
-<br> Query: `?page=&limit=&sort=&tag=&search=` | No | `200 OK` + Paginated list of mods by this user |
+<br> **Body (Strict):** `{ role: "user" | "moderator" | "admin" }` | JWT (Admin only) | `spamLimiter` | `200 OK` + Updated target user object |
 
-### Modification Management (`/mods`)
+### Modification Management (`/api/mods`)
 
-| Method | Endpoint | Request Payload / Params | Auth Required | Expected Response (Success) |
-| --- | --- | --- | --- | --- |
-| `GET` | `/mods` | Query parameters:<br>
+| Method | Endpoint | Request Payload / Params Validation | Auth Required | Rate Limiter | Expected Response (Success) |
+| --- | --- | --- | --- | --- | --- |
+| `GET` | `/api/mods` | **Query parameters:** <br>
 
-<br>• `page` (default: 1)<br>
+<br> • `page` (default: 1) <br>
 
-<br>• `limit` (default: 10, max: 100)<br>
+<br> • `limit` (default: 10, max: 100) <br>
 
-<br>• `sort` (`newest` | `oldest` | `downloads` | `title`) <br>
+<br> • `sort` (`newest` | `oldest` | `downloads` | `title`) <br>
 
-<br>• `tag` (one or multiple valid tags)<br>
+<br> • `tag` (one or multiple valid tag enums) <br>
 
-<br>• `search` (partial title match) | No | `200 OK` + Paginated array with meta statistics |
-| `POST` | `/mods` | Multipart/Form-Data:<br>
+<br> • `search` (partial match case-insensitive) | No (Optional JWT) | `globalLimiter` | `200 OK` + Paginated array with meta statistics and `isLiked` state |
+| `POST` | `/api/mods` | **Multipart/Form-Data:** <br>
 
-<br>• `file` (binary archive)<br>
+<br> • `file` (binary archive payload) <br>
 
-<br>• fields: `{ title, description, version, tags? }` | JWT | `201 Created` + Complete Mod metadata object |
-| `GET` | `/mods/:id` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` + Target Mod details |
-| `PATCH` | `/mods/:id` | Multipart/Form-Data (Optional new `file`) <br>
+<br> • `body`: `{ title, description, version (SemVer), tags? }` | JWT | `uploadLimiter` | `201 Created` + Populated Mod metadata object |
+| `GET` | `/api/mods/:id` | **Params:** `id` (24-char Hex ObjectId) | No | `globalLimiter` | `200 OK` + Specified Mod details |
+| `PATCH` | `/api/mods/:id` | **Params:** `id` <br>
 
-<br> JSON payload fields: partial mod parameters | JWT (Owner / Admin) | `200 OK` + Updated Mod information |
-| `DELETE` | `/mods/:id` | Params: `id` (24-char Hex ObjectId) | JWT (Owner / Admin) | `200 OK` (Deletes metadata and local file) |
-| `GET` | `/mods/:id/download` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` (Streams binary attachment, increments counter) |
+<br> **Multipart/Form-Data:** Optional binary `file` <br>
+
+<br> **Body (Strict):** partial validation fields matching mod structure | JWT (Owner / Admin) | `uploadLimiter` | `200 OK` + Updated Mod information object |
+| `DELETE` | `/api/mods/:id` | **Params:** `id` (24-char Hex ObjectId) | JWT (Owner / Admin) | `globalLimiter` | `200 OK` (Removes document and local attachment completely) |
+| `GET` | `/api/mods/:id/download` | **Params:** `id` (24-char Hex ObjectId) | No | `globalLimiter` | Streams binary attachment payload using clean standardized filename syntax and increments downloads |
+| `POST` | `/api/mods/:id/like` | **Params:** `id` (24-char Hex ObjectId) | JWT | `spamLimiter` | `200 OK` -> `{ "status": "success", "data": { "liked": boolean, "likesCount": number } }` |
+
+### Comment Management (`/api/mods`)
+
+| Method | Endpoint | Request Payload / Params Validation | Auth Required | Rate Limiter | Expected Response (Success) |
+| --- | --- | --- | --- | --- | --- |
+| `POST` | `/api/mods/:id/comments` | **Params:** `id` (Mod id) <br>
+
+<br> **Body (Strict):** `{ text (1-500), parentId?, replyTo? }` | JWT | `spamLimiter` | `201 Created` + New populated comment instance |
+| `GET` | `/api/mods/:id/comments` | **Params:** `id` (Mod id) <br>
+
+<br> **Query:** `?parentId=&page=&limit=` | No | `globalLimiter` | `200 OK` + Balanced chronological array of comments with meta |
+| `PATCH` | `/api/mods/comments/:id` | **Params:** `id` (Comment id) <br>
+
+<br> **Body (Strict):** `{ text (1-500), replyTo? }` | JWT (Owner / Admin) | `spamLimiter` | `203 Non-Authoritative Information` + Updated comment |
+| `DELETE` | `/api/mods/comments/:id` | **Params:** `id` (Comment id) | JWT (Owner / Admin) | `globalLimiter` | `200 OK` (Cascades and deletes child replies contextually) |
 
 ---
 
@@ -189,10 +246,11 @@ All application errors pass through a centralized processing middleware. Standar
 ### Handled Error Profiles
 
 * `AppError`: Custom application-level failures (e.g., `403 FORBIDDEN`, `401 NO_TOKEN`, `404 MOD_NOT_FOUND`).
-* `ZodError` / `ValidationError`: Request fields fail to match schema definitions. Contains an extra `errors` array mapping fields to validation failures.
-* `CastError`: Invalid database `ObjectId` strings passed to endpoints.
-* `MulterError`: Uploaded file exceeds limits or hits incorrect routing names.
-* `Mongo Error 11000`: Unique constraint violations (e.g., registering duplicate emails or titles).
+* `ZodError`: Request fields fail to match Zod validation schema parameters. Returns an `errors` array containing the specific `field` and `message`.
+* `mongoose.Error.ValidationError`: Mongoose schema state failures on database persistence operations.
+* `mongoose.Error.CastError`: Invalid database `ObjectId` parameter formats passed to core operations.
+* `MulterError`: Uploaded binary assets exceed size constraints or map to invalid field handles.
+* `Mongo Error 11000`: Unique constraint violations (e.g., registering duplicate emails or titles). Returns `DUPLICATE_RECORD`.
 
 ---
 

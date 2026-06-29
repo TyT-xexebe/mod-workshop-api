@@ -1,4 +1,5 @@
 import { ModModel, IMod } from "../models/mod.model.js";
+import { LikeModel } from "../models/like.model.js";
 import {
   CreateModInput,
   GetModQueryInput,
@@ -10,6 +11,37 @@ import { FilterQuery } from "mongoose";
 import { deleteFileSafe } from "../utils/fileSystem.js";
 import { ownerOrAdmin } from "../utils/authHelper.js";
 import { escapeRegex } from "../utils/escapeRegExp.js";
+
+const toggleLike = async (modId: string, userId: string) => {
+  const mod = await ModModel.findById(modId);
+  if (!mod) throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+
+  const existingLike = await LikeModel.findOneAndDelete({ userId, modId });
+
+  if (existingLike) {
+    const updatedMod = await ModModel.findByIdAndUpdate(
+      modId,
+      { $inc: { likesCount: -1 } },
+      { new: true },
+    );
+    return { liked: false, likesCount: updatedMod?.likesCount || 0 };
+  }
+
+  try {
+    await LikeModel.create({ userId, modId });
+    const updatedMod = await ModModel.findByIdAndUpdate(
+      modId,
+      { $inc: { likesCount: 1 } },
+      { new: true },
+    );
+    return { liked: true, likesCount: updatedMod?.likesCount || 0 };
+  } catch (error: any) {
+    if (error.code === 11000) {
+      throw new AppError(400, "ALREADY_LIKED", "You already liked this mod");
+    }
+    throw error;
+  }
+};
 
 const incDownload = async (id: string) => {
   const mod = await ModModel.findByIdAndUpdate(
@@ -77,6 +109,7 @@ const patch = async (
 const list = async (
   query: GetModQueryInput,
   extraFilter: FilterQuery<IMod> = {},
+  userId?: string,
 ) => {
   const { tag, search, page, limit, sort } = query;
 
@@ -100,10 +133,31 @@ const list = async (
     .skip(skip)
     .limit(limit);
 
-  return { mods, totalMods, page, limit };
+  let likedModIds: string[] = [];
+
+  if (userId && mods.length > 0) {
+    const modIds = mods.map((mod) => mod._id);
+    const userLikes = await LikeModel.find({
+      userId,
+      modId: { $in: modIds },
+    }).select("modId");
+
+    likedModIds = userLikes.map((like) => like.modId.toString());
+  }
+
+  const modsWithLike = mods.map((mod) => {
+    const modObj = mod.toObject();
+    return {
+      ...modObj,
+      isLiked: userId ? likedModIds.includes(mod._id.toString()) : false,
+    };
+  });
+
+  return { mods: modsWithLike, totalMods, page, limit };
 };
 
 export const modService = {
+  toggleLike,
   incDownload,
   create,
   modById,

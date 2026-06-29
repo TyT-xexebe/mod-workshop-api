@@ -1,0 +1,1897 @@
+path TODO.md
+- [x] Expand mod fields (likes, comments)
+- [ ] Add email verification
+- [ ] Add endpoint tests with Vitest
+
+path src/app.ts
+import express, { Request, Response } from "express";
+
+import authRoutes from "./routes/authRoutes.js";
+import modRoutes from "./routes/modRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
+import { errorHandler } from "./middlewares/errorHandler.js";
+import fs from "fs";
+import cors from "cors";
+import helmet from "helmet";
+import { ENV } from "./config/env.js";
+import { globalLimiter } from "./middlewares/rateLimit.js";
+
+const app = express();
+
+if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
+
+app.use(express.json());
+
+app.use(
+  cors({
+    origin: ENV.NODE_ENV === "production" ? [ENV.ALLOWED_ORIGIN] : true,
+  }),
+);
+app.use(helmet());
+
+app.use("/api", globalLimiter);
+
+app.use("/api/auth", authRoutes);
+app.use("/api/mods", modRoutes);
+app.use("/api/users", userRoutes);
+
+app.get("/api/ping", (req: Request, res: Response) => {
+  res.json({ answer: "pong" });
+});
+
+app.use(errorHandler);
+export default app;
+
+path src/models/user.model.ts
+import { Schema, model } from "mongoose";
+import { ROLES, UserRole } from "../config/constants.js";
+
+export interface IUser {
+  username: string;
+  passwordHash: string;
+  description: string;
+  email: string;
+  role: UserRole;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const userSchema = new Schema<IUser>(
+  {
+    username: { type: String, required: true, unique: true, trim: true },
+    passwordHash: { type: String, required: true },
+    description: { type: String, trim: true, default: "" },
+    email: { type: String, required: true, unique: true },
+    role: {
+      type: String,
+      enum: ROLES,
+      default: "user" satisfies UserRole,
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+export const UserModel = model<IUser>("User", userSchema);
+
+path src/models/comment.model.ts
+import { Schema, model, Types } from "mongoose";
+
+export interface IComment {
+  modId: Types.ObjectId;
+  userId: Types.ObjectId;
+  text: string;
+  parentId: Types.ObjectId | null;
+  replyTo: Types.ObjectId | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const commentSchema = new Schema<IComment>(
+  {
+    modId: { type: Schema.Types.ObjectId, ref: "Mod", required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    text: { type: String, required: true, trim: true },
+    parentId: { type: Schema.Types.ObjectId, ref: "Comment", default: null },
+    replyTo: { type: Schema.Types.ObjectId, ref: "User", default: null },
+  },
+  { timestamps: true },
+);
+
+commentSchema.index({ modId: 1, parentId: 1, createdAt: -1 });
+commentSchema.index({ parentId: 1, createdAt: 1 });
+
+export const CommentModel = model<IComment>("Comment", commentSchema);
+
+path src/models/like.model.ts
+import { Schema, model, Types } from "mongoose";
+
+export interface ILike {
+  userId: Types.ObjectId;
+  modId: Types.ObjectId;
+  createdAt: Date;
+}
+
+const likeSchema = new Schema<ILike>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    modId: { type: Schema.Types.ObjectId, ref: "Mod", required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+likeSchema.index({ userId: 1, modId: 1 }, { unique: true });
+
+export const LikeModel = model<ILike>("Like", likeSchema);
+
+path src/models/mod.model.ts
+import { Schema, model, Types } from "mongoose";
+import { MOD_TAGS, ModTag } from "../config/constants.js";
+
+export interface IMod {
+  title: string;
+  description: string;
+  version: string;
+  author: Types.ObjectId;
+  tags: ModTag[];
+  fileUrl: string;
+  downloads: Number;
+  likesCount: Number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const modSchema = new Schema<IMod>(
+  {
+    title: { type: String, required: true, unique: true },
+    description: { type: String, default: "" },
+    version: { type: String, required: true, default: "1.0.0" },
+    author: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    tags: { type: [String], enum: MOD_TAGS, default: [] },
+    fileUrl: { type: String, required: true },
+    downloads: { type: Number, default: 0 },
+    likesCount: { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+
+export const ModModel = model<IMod>("Mod", modSchema);
+
+path src/utils/authHelper.ts
+import { AppError } from "./appError.js";
+import { deleteFileSafe } from "./fileSystem.js";
+
+export const ownerOrAdmin = async (
+  authorId: string | object,
+  userId: string,
+  role: string,
+  cleanupPath?: string,
+): Promise<void> => {
+  if (authorId.toString() !== userId && role !== "admin") {
+    if (cleanupPath) {
+      await deleteFileSafe(cleanupPath);
+    }
+    throw new AppError(403, "FORBIDDEN", "You cant use this");
+  }
+};
+
+path src/utils/fileSystem.ts
+import fs from "fs/promises";
+
+export const deleteFileSafe = async (filePath: string): Promise<void> => {
+  try {
+    await fs.unlink(filePath);
+  } catch (error: any) {
+    if (error.code !== "ENOENT") {
+      console.error(`Failed to delete file at ${filePath}:`, error);
+    }
+  }
+};
+
+path src/utils/escapeRegExp.ts
+export const escapeRegex = (regex: string) =>
+  regex.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+path src/utils/appError.ts
+export class AppError extends Error {
+  constructor(
+    public statusCode: number,
+    public code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AppError";
+  }
+}
+
+path src/types/express.d.ts
+import { UserRole } from "../config/constants.js";
+
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: {
+      userId: string;
+      role: UserRole;
+    };
+    file?: Express.Multer.File;
+  }
+}
+
+path src/middlewares/asyncHandler.ts
+import { Request, Response, NextFunction, RequestHandler } from "express";
+import { ParamsDictionary } from "express-serve-static-core";
+
+export const asyncHandler = <
+  P = ParamsDictionary,
+  ResBody = any,
+  ReqBody = any,
+  ReqQuery = any,
+>(
+  fn: (
+    req: Request<P, ResBody, ReqBody, ReqQuery>,
+    res: Response<ResBody>,
+    next: NextFunction,
+  ) => any,
+): RequestHandler<P, ResBody, ReqBody, ReqQuery> => {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+
+path src/middlewares/rateLimit.ts
+import rateLimit from "express-rate-limit";
+import { AppError } from "../utils/appError.js";
+
+export const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next) => {
+    next(
+      new AppError(
+        429,
+        "TOO_MANY_REQUESTS",
+        "Too many requests. Try again later.",
+      ),
+    );
+  },
+});
+
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next) => {
+    next(
+      new AppError(
+        429,
+        "AUTH_LIMIT_EXCEEDED",
+        "Too many auth attempts. Access temporary blocked.",
+      ),
+    );
+  },
+});
+
+export const spamLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next) => {
+    next(
+      new AppError(429, "SPAM_PROTECTION", "Action blocked. Please slow down."),
+    );
+  },
+});
+
+export const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next) => {
+    next(
+      new AppError(
+        429,
+        "UPLOAD_LIMIT_EXCEEDED",
+        "Upload limit reached. Try again later.",
+      ),
+    );
+  },
+});
+
+path src/middlewares/upload.ts
+import { Request } from "express";
+import multer from "multer";
+import path from "path";
+import { AppError } from "../utils/appError.js";
+import { FILE_UPLOAD } from "../config/constants.js";
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `${uniqueSuffix}${path.extname(file.originalname)}`);
+  },
+});
+
+const fileFilter = (
+  _req: Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback,
+) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+
+  if ((FILE_UPLOAD.EXTENSIONS as readonly string[]).includes(ext))
+    return cb(null, true);
+
+  cb(
+    new AppError(
+      400,
+      "INVALID_FILE_TYPE",
+      `Invalid file type. Only ${FILE_UPLOAD.EXTENSIONS.join(" ,")} are allowed`,
+    ),
+  );
+};
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: FILE_UPLOAD.MAX_SIZE,
+  },
+});
+
+path src/middlewares/errorHandler.ts
+import { ErrorRequestHandler } from "express";
+import { ZodError } from "zod";
+import { MulterError } from "multer";
+import mongoose from "mongoose";
+import { AppError } from "../utils/appError.js";
+import { ENV } from "../config/env.js";
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  if (err instanceof AppError) {
+    return res.status(err.statusCode).json({
+      status: "error",
+      code: err.code,
+      message: err.message,
+    });
+  }
+
+  if (err instanceof ZodError) {
+    return res.status(400).json({
+      status: "error",
+      code: "VALIDATION_FAILED",
+      message: "data validations failed",
+      errors: err.errors.map((e) => ({
+        field: e.path.join("."),
+        message: e.message,
+      })),
+    });
+  }
+
+  if (err instanceof mongoose.Error.ValidationError) {
+    return res.status(400).json({
+      status: "error",
+      code: "VALIDATION_FAILED",
+      message: "data validations failed",
+      errors: Object.values(err.errors).map((e) => ({
+        field: e.path,
+        message: e.message,
+      })),
+    });
+  }
+
+  if (err instanceof mongoose.Error.CastError) {
+    return res.status(400).json({
+      status: "error",
+      code: "INVALID_ID",
+      message: `invalid value for field ${err.path}`,
+    });
+  }
+
+  if (err instanceof MulterError) {
+    const messages: Record<string, string> = {
+      LIMIT_FILE_SIZE: "file is too large",
+      LIMIT_UNEXPECTED_FILE: "unexpected file field",
+    };
+    return res.status(400).json({
+      status: "error",
+      code: err.code,
+      message: messages[err.code] || err.message,
+    });
+  }
+
+  if (err.code === 11000) {
+    const field = Object.keys(err.keyValue || {})[0] || "field";
+    return res.status(400).json({
+      status: "error",
+      code: "DUPLICATE_RECORD",
+      message: `this field ${field} already taken`,
+    });
+  }
+  if (ENV.NODE_ENV === "development") {
+    console.error(`[SYSTEM ERROR]: ${err}`);
+
+    return res.status(500).json({
+      status: "error",
+      code: "INTERNAL_SERVER_ERROR",
+      message: err.message,
+      stack: err.stack,
+    });
+  }
+
+  return res.status(500).json({
+    status: "error",
+    code: "INTERNAL_SERVER_ERROR",
+    message: "server side error",
+  });
+};
+
+path src/middlewares/validate.ts
+import { Request, Response, NextFunction } from "express";
+import { AnyZodObject } from "zod";
+import { deleteFileSafe } from "../utils/fileSystem.js";
+
+export const validate = (schema: AnyZodObject) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = await schema.parseAsync({
+        body: req.body,
+        params: req.params,
+        query: req.query,
+      });
+
+      if (parsed.body !== undefined) req.body = parsed.body;
+      if (parsed.params !== undefined) Object.assign(req.params, parsed.params);
+      if (parsed.query !== undefined) Object.assign(req.query, parsed.query);
+      next();
+    } catch (error) {
+      if (req.file) await deleteFileSafe(req.file.path);
+      next(error);
+    }
+  };
+};
+
+path src/middlewares/auth.ts
+import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+import { asyncHandler } from "./asyncHandler.js";
+import { AppError } from "../utils/appError.js";
+import { UserRole } from "../config/constants.js";
+import { ENV } from "../config/env.js";
+import { ObjectId } from "mongoose";
+
+export interface JwtPayload {
+  userId: string;
+  role: UserRole;
+}
+
+export const protect = asyncHandler(
+  async (req: Request, res: Response, next: NextFunction) => {
+    let token: string | undefined;
+
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith("Bearer")
+    ) {
+      token = req.headers.authorization.split(" ")[1];
+    }
+
+    if (!token)
+      throw new AppError(
+        401,
+        "NO_TOKEN",
+        "You are not logged in. Provide a token",
+      );
+    try {
+      const decoded = jwt.verify(token, ENV.JWT_SECRET) as JwtPayload;
+
+      req.user = {
+        userId: decoded.userId,
+        role: decoded.role,
+      };
+
+      next();
+    } catch (err) {
+      throw new AppError(401, "INVALID_TOKEN", "invalid or expired token");
+    }
+  },
+);
+
+export const optionalProtect = asyncHandler(
+  async (req: Request, res: Response, next: NextFunction) => {
+    let token: string | undefined;
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith("Bearer")
+    )
+      token = req.headers.authorization.split(" ")[1];
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, ENV.JWT_SECRET) as JwtPayload;
+        req.user = {
+          userId: decoded.userId,
+          role: decoded.role,
+        };
+      } catch (err) {}
+    }
+    next();
+  },
+);
+
+export const requireRole = (...roles: UserRole[]) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user || !roles.includes(req.user.role))
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "You dont have rightsto perform this action.",
+      );
+    next();
+  };
+};
+
+path src/services/user.service.ts
+import { UserModel } from "../models/user.model.js";
+import { ModModel } from "../models/mod.model.js";
+import { UpdateUserInput } from "../schemas/user.schema.js";
+import { AppError } from "../utils/appError.js";
+import { modService } from "./mod.service.js";
+import { GetModQueryInput } from "../schemas/mod.schema.js";
+import { UserRole } from "../config/constants.js";
+
+const find = async (id: string) => {
+  const user = await UserModel.findById(id).select("-passwordHash");
+  if (!user) throw new AppError(404, "USER_NOT_FOUND", "user not found");
+  return user;
+};
+
+const patch = async (body: UpdateUserInput, userId: string) => {
+  const { username, email, description } = body;
+  const patchData = { username, email, description };
+
+  if (username || email) {
+    const candidate = await UserModel.findOne({
+      _id: { $ne: userId },
+      $or: [...(username ? [{ username }] : []), ...(email ? [{ email }] : [])],
+    });
+    if (candidate)
+      throw new AppError(400, "USER_EXIST", "username or email already in use");
+  }
+
+  return UserModel.findByIdAndUpdate(userId, patchData, {
+    new: true,
+    runValidators: true,
+  }).select("-passwordHash");
+};
+
+const findMods = async (
+  id: string,
+  query: GetModQueryInput,
+  userId?: string,
+) => {
+  await find(id);
+  return modService.list(query, { author: id }, userId);
+};
+
+const updateRole = async (id: string, role: UserRole) => {
+  const updatedUser = await UserModel.findByIdAndUpdate(
+    id,
+    { role },
+    { new: true, runValidators: true },
+  ).select("-passwordHash");
+  if (!updatedUser) throw new AppError(404, "USER_NOT_FOUND", "user not found");
+  return updatedUser;
+};
+
+export const userService = {
+  find,
+  patch,
+  findMods,
+  updateRole,
+};
+
+path src/services/comment.service.ts
+import { CommentModel } from "../models/comment.model.js";
+import { ModModel } from "../models/mod.model.js";
+import { AppError } from "../utils/appError.js";
+import {
+  CreateCommentInput,
+  PatchCommentInput,
+  GetCommentsQueryInput,
+} from "../schemas/comment.schema.js";
+import { ownerOrAdmin } from "../utils/authHelper.js";
+import { UserRole } from "../config/constants.js";
+
+const create = async (
+  modId: string,
+  userId: string,
+  data: CreateCommentInput,
+) => {
+  const modExists = await ModModel.exists({ _id: modId });
+  if (!modExists) throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+
+  let finalParentId: string | null = null;
+  let finalReplyTo: string | null = data.replyTo || null;
+
+  if (data.parentId) {
+    const parentComment = await CommentModel.findById(data.parentId);
+    if (!parentComment)
+      throw new AppError(404, "COMMENT_NOT_FOUND", "parent comment not found");
+
+    finalParentId = parentComment.parentId
+      ? parentComment.parentId.toString()
+      : parentComment._id.toString();
+
+    if (!finalReplyTo) {
+      finalReplyTo = parentComment.userId.toString();
+    }
+  }
+
+  const comment = await CommentModel.create({
+    modId,
+    userId,
+    text: data.text,
+    parentId: finalParentId,
+    replyTo: finalReplyTo,
+  });
+
+  return comment.populate([
+    { path: "userId", select: "username" },
+    { path: "replyTo", select: "username" },
+  ]);
+};
+
+const patch = async (
+  commentId: string,
+  userId: string,
+  userRole: UserRole,
+  data: PatchCommentInput,
+) => {
+  const comment = await CommentModel.findById(commentId);
+  if (!comment)
+    throw new AppError(404, "COMMENT_NOT_FOUND", "comment not found");
+
+  await ownerOrAdmin(comment.userId, userId, userRole);
+
+  const updatedComment = await CommentModel.findByIdAndUpdate(
+    commentId,
+    { text: data.text },
+    { new: true, runValidators: true },
+  ).populate([
+    { path: "userId", select: "username" },
+    { path: "replyTo", select: "username" },
+  ]);
+
+  return updatedComment;
+};
+
+const list = async (modId: string, query: GetCommentsQueryInput) => {
+  const { parentId, page, limit } = query;
+  const skip = (page - 1) * limit;
+
+  const filter = {
+    modId,
+    parentId: parentId || null,
+  };
+
+  const sortOrder = parentId ? 1 : -1;
+
+  const comments = await CommentModel.find(filter)
+    .populate([
+      { path: "userId", select: "username" },
+      { path: "replyTo", select: "username" },
+    ])
+    .sort({ createdAt: sortOrder })
+    .skip(skip)
+    .limit(limit);
+
+  const total = await CommentModel.countDocuments(filter);
+
+  return { comments, total, page, limit };
+};
+
+const remove = async (
+  commentId: string,
+  userId: string,
+  userRole: UserRole,
+) => {
+  const comment = await CommentModel.findById(commentId);
+  if (!comment)
+    throw new AppError(404, "COMMENT_NOT_FOUND", "comment not found");
+
+  await ownerOrAdmin(comment.userId, userId, userRole);
+
+  await CommentModel.findByIdAndDelete(commentId);
+  await CommentModel.deleteMany({ parentId: commentId });
+};
+
+export const commentService = { create, list, patch, remove };
+
+path src/services/auth.service.ts
+import bcrypt from "bcrypt";
+import { UserModel } from "../models/user.model.js";
+import { RegisterInput, LoginInput } from "../schemas/user.schema.js";
+import { AppError } from "../utils/appError.js";
+import jwt from "jsonwebtoken";
+import { ENV } from "../config/env.js";
+
+const register = async (body: RegisterInput) => {
+  const { username, password, email } = body;
+
+  const candidates = await UserModel.findOne({
+    $or: [{ username }, { email }],
+  });
+
+  if (candidates) {
+    throw new AppError(
+      400,
+      "USER_EXIST",
+      "User with this username or email already exist",
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  return UserModel.create({
+    username,
+    passwordHash,
+    email,
+  });
+};
+
+const login = async (body: LoginInput) => {
+  const { password, email } = body;
+
+  const user = await UserModel.findOne({ email });
+
+  if (!user)
+    throw new AppError(401, "INVALID_CREDENTIALS", "invalid email or password");
+
+  const passwordCheck = await bcrypt.compare(password, user.passwordHash);
+  if (!passwordCheck)
+    throw new AppError(401, "INVALID_CREDENTIALS", "invalid email or password");
+
+  const token = jwt.sign(
+    { userId: user._id, role: user.role },
+    ENV.JWT_SECRET,
+    { expiresIn: "1d" },
+  );
+
+  return { user, token };
+};
+
+export const authService = {
+  register,
+  login,
+};
+
+path src/services/mod.service.ts
+import { ModModel, IMod } from "../models/mod.model.js";
+import { LikeModel } from "../models/like.model.js";
+import {
+  CreateModInput,
+  GetModQueryInput,
+  PatchModInput,
+} from "../schemas/mod.schema.js";
+import { UserRole } from "../config/constants.js";
+import { AppError } from "../utils/appError.js";
+import { FilterQuery } from "mongoose";
+import { deleteFileSafe } from "../utils/fileSystem.js";
+import { ownerOrAdmin } from "../utils/authHelper.js";
+import { escapeRegex } from "../utils/escapeRegExp.js";
+
+const toggleLike = async (modId: string, userId: string) => {
+  const mod = await ModModel.findById(modId);
+  if (!mod) throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+
+  const existingLike = await LikeModel.findOneAndDelete({ userId, modId });
+
+  if (existingLike) {
+    const updatedMod = await ModModel.findByIdAndUpdate(
+      modId,
+      { $inc: { likesCount: -1 } },
+      { new: true },
+    );
+    return { liked: false, likesCount: updatedMod?.likesCount || 0 };
+  }
+
+  try {
+    await LikeModel.create({ userId, modId });
+    const updatedMod = await ModModel.findByIdAndUpdate(
+      modId,
+      { $inc: { likesCount: 1 } },
+      { new: true },
+    );
+    return { liked: true, likesCount: updatedMod?.likesCount || 0 };
+  } catch (error: any) {
+    if (error.code === 11000) {
+      throw new AppError(400, "ALREADY_LIKED", "You already liked this mod");
+    }
+    throw error;
+  }
+};
+
+const incDownload = async (id: string) => {
+  const mod = await ModModel.findByIdAndUpdate(
+    id,
+    { $inc: { downloads: 1 } },
+    { new: true },
+  );
+
+  if (!mod) throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+  return mod;
+};
+
+const create = async (
+  data: CreateModInput,
+  authorId: string,
+  fileUrl: string,
+) => {
+  return ModModel.create({
+    ...data,
+    author: authorId,
+    fileUrl,
+  });
+};
+
+const modById = async (id: string) => {
+  const mod = await ModModel.findById(id);
+
+  if (!mod) throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+  return mod;
+};
+
+const remove = async (id: string, userId: string, userRole: UserRole) => {
+  const mod = await modById(id);
+
+  await ownerOrAdmin(mod.author, userId, userRole);
+  await deleteFileSafe(mod.fileUrl);
+  await ModModel.findByIdAndDelete(id);
+};
+
+const patch = async (
+  id: string,
+  data: PatchModInput,
+  userId: string,
+  userRole: UserRole,
+  filePath?: string,
+) => {
+  const mod = await ModModel.findById(id);
+  if (!mod) {
+    if (filePath) await deleteFileSafe(filePath);
+    throw new AppError(404, "MOD_NOT_FOUND", "mod not found");
+  }
+
+  await ownerOrAdmin(mod.author, userId, userRole, filePath);
+
+  const { title, description, version, tags } = data;
+  const updateData: Partial<IMod> = { title, description, version, tags };
+  if (filePath) updateData.fileUrl = filePath;
+
+  return await ModModel.findByIdAndUpdate(id, updateData, {
+    new: true,
+    runValidators: true,
+  });
+};
+
+const list = async (
+  query: GetModQueryInput,
+  extraFilter: FilterQuery<IMod> = {},
+  userId?: string,
+) => {
+  const { tag, search, page, limit, sort } = query;
+
+  const filter: FilterQuery<IMod> = { ...extraFilter };
+  if (tag?.length) filter.tags = { $all: tag };
+  if (search) filter.title = { $regex: escapeRegex(search), $options: "i" };
+
+  const sortMap: Record<string, Record<string, 1 | -1>> = {
+    newest: { createdAt: -1 },
+    oldest: { createdAt: 1 },
+    title: { title: 1 },
+    downloads: { downloads: -1 },
+  };
+
+  const totalMods = await ModModel.countDocuments(filter);
+  const skip = (page - 1) * limit;
+
+  const mods = await ModModel.find(filter)
+    .populate("author", "username")
+    .sort(sortMap[sort])
+    .skip(skip)
+    .limit(limit);
+
+  let likedModIds: string[] = [];
+
+  if (userId && mods.length > 0) {
+    const modIds = mods.map((mod) => mod._id);
+    const userLikes = await LikeModel.find({
+      userId,
+      modId: { $in: modIds },
+    }).select("modId");
+
+    likedModIds = userLikes.map((like) => like.modId.toString());
+  }
+
+  const modsWithLike = mods.map((mod) => {
+    const modObj = mod.toObject();
+    return {
+      ...modObj,
+      isLiked: userId ? likedModIds.includes(mod._id.toString()) : false,
+    };
+  });
+
+  return { mods: modsWithLike, totalMods, page, limit };
+};
+
+export const modService = {
+  toggleLike,
+  incDownload,
+  create,
+  modById,
+  remove,
+  patch,
+  list,
+};
+
+path src/routes/authRoutes.ts
+import express from "express";
+import { authController } from "../controllers/authController.js";
+import { validate } from "../middlewares/validate.js";
+import { registerSchema, loginSchema } from "../schemas/user.schema.js";
+import { authLimiter } from "../middlewares/rateLimit.js";
+
+const router = express.Router();
+
+router.post(
+  "/register",
+  authLimiter,
+  validate(registerSchema),
+  authController.register,
+);
+router.post("/login", authLimiter, validate(loginSchema), authController.login);
+
+export default router;
+
+path src/routes/userRoutes.ts
+import express from "express";
+import { userController } from "../controllers/userController.js";
+import { protect, requireRole } from "../middlewares/auth.js";
+import { validate } from "../middlewares/validate.js";
+import {
+  getUserIdSchema,
+  updateUserSchema,
+  updateRoleSchema,
+} from "../schemas/user.schema.js";
+import { spamLimiter } from "../middlewares/rateLimit.js";
+
+const router = express.Router();
+
+router.get("/me", protect, userController.getMe);
+router.patch(
+  "/me",
+  protect,
+  spamLimiter,
+  validate(updateUserSchema),
+  userController.patchMe,
+);
+
+router.get("/:id", validate(getUserIdSchema), userController.getUser);
+router.get("/:id/mods", validate(getUserIdSchema), userController.getUserMods);
+
+router.patch(
+  "/:id/role",
+  protect,
+  spamLimiter,
+  requireRole("admin"),
+  validate(updateRoleSchema),
+  userController.updateRole,
+);
+
+export default router;
+
+path src/routes/modRoutes.ts
+import express from "express";
+import {
+  createModSchema,
+  getModIdSchema,
+  patchModSchema,
+  getModQuerySchema,
+} from "../schemas/mod.schema.js";
+import { modController } from "../controllers/modController.js";
+import { validate } from "../middlewares/validate.js";
+import { protect, optionalProtect } from "../middlewares/auth.js";
+import { upload } from "../middlewares/upload.js";
+import { commentController } from "../controllers/commentController.js";
+import {
+  createCommentSchema,
+  patchCommentSchema,
+  deleteCommentSchema,
+} from "../schemas/comment.schema.js";
+import { uploadLimiter, spamLimiter } from "../middlewares/rateLimit.js";
+
+const router = express.Router();
+
+router.post(
+  "/",
+  protect,
+  uploadLimiter,
+  upload.single("file"),
+  validate(createModSchema),
+  modController.createMod,
+);
+router.get("/:id", validate(getModIdSchema), modController.getModById);
+router.delete(
+  "/:id",
+  protect,
+  validate(getModIdSchema),
+  modController.deleteMod,
+);
+router.patch(
+  "/:id",
+  protect,
+  uploadLimiter,
+  upload.single("file"),
+  validate(getModIdSchema),
+  validate(patchModSchema),
+  modController.patchMod,
+);
+router.get("/", optionalProtect, modController.getAllMods);
+router.get(
+  "/:id/download",
+  validate(getModIdSchema),
+  modController.downloadMod,
+);
+router.post(
+  "/:id/like",
+  protect,
+  spamLimiter,
+  validate(getModIdSchema),
+  modController.toggleLike,
+);
+
+router.post(
+  "/:id/comments",
+  protect,
+  spamLimiter,
+  validate(createCommentSchema),
+  commentController.addComment,
+);
+
+router.get(
+  "/:id/comments",
+  validate(getModIdSchema),
+  commentController.getComments,
+);
+
+router.patch(
+  "/comments/:id",
+  protect,
+  spamLimiter,
+  validate(patchCommentSchema),
+  commentController.patchComment,
+);
+router.delete(
+  "/comments/:id",
+  protect,
+  validate(deleteCommentSchema),
+  commentController.deleteComment,
+);
+
+export default router;
+
+path src/config/env.ts
+import "dotenv/config";
+
+const jwtSecret = process.env.JWT_SECRET;
+const mongoUri = process.env.MONGO;
+
+if (!jwtSecret) {
+  console.log("jwt secret not found");
+  process.exit(1);
+}
+
+if (!mongoUri) {
+  console.log("mongo uri not found");
+  process.exit(1);
+}
+
+export const ENV = {
+  JWT_SECRET: jwtSecret,
+  MONGO_URI: mongoUri,
+  PORT: process.env.PORT || 5000,
+  NODE_ENV: process.env.NODE_ENV || "development",
+  ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN || "",
+};
+
+path src/config/db.ts
+import mongoose from "mongoose";
+import { ENV } from "./env.js";
+
+export const connectDB = async () => {
+  try {
+    await mongoose.connect(ENV.MONGO_URI);
+    console.log("mongo connected");
+  } catch (error) {
+    console.log("mongo error ", error);
+    process.exit(1);
+  }
+};
+
+path src/config/constants.ts
+export const ROLES = ["user", "moderator", "admin"] as const;
+export type UserRole = (typeof ROLES)[number];
+export const mongoIdRegex = /^[0-9a-fA-F]{24}$/;
+
+export const MOD_TAGS = [
+  "content",
+  "script",
+  "UI",
+  "qol",
+  "java",
+  "soundpack",
+  "texturepack",
+] as const;
+export type ModTag = (typeof MOD_TAGS)[number];
+
+export const FILE_UPLOAD = {
+  EXTENSIONS: [".jar", ".zip", ".js"] as const,
+  MAX_SIZE: 50 * 1024 * 1024, // 50MB
+} as const;
+
+path src/schemas/user.schema.ts
+import { z } from "zod";
+import { ROLES } from "../config/constants.js";
+import { mongoIdRegex } from "../config/constants.js";
+
+export const registerSchema = z.object({
+  body: z.object({
+    username: z
+      .string()
+      .min(3, "username too short")
+      .max(20, "username too long"),
+    password: z.string().min(6, "password too short"),
+    email: z.string().email(),
+  }),
+});
+
+export type RegisterInput = z.infer<typeof registerSchema>["body"];
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(6, "password too short"),
+  }),
+});
+
+export type LoginInput = z.infer<typeof loginSchema>["body"];
+
+export const userSchema = z.object({
+  username: z
+    .string()
+    .min(3, "username too short")
+    .max(20, "username too long"),
+  password: z.string().min(6, "password too short"),
+  email: z.string().email(),
+  description: z.string().max(200, "description too long").optional(),
+  role: z.enum(ROLES),
+});
+
+export const updateUserSchema = z.object({
+  body: z
+    .object({
+      username: z
+        .string()
+        .min(3, "username too short")
+        .max(20, "username too long")
+        .optional(),
+      description: z.string().max(200, "description too long").optional(),
+      email: z.string().email("invalid email format").optional(),
+    })
+    .strict(),
+});
+
+export const getUserIdSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid user id format"),
+  }),
+});
+
+export type UpdateUserInput = z.infer<typeof updateUserSchema>["body"];
+export type UserInput = z.infer<typeof userSchema>;
+
+export const updateRoleSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid user id format"),
+  }),
+  body: z
+    .object({
+      role: z.enum(ROLES),
+    })
+    .strict(),
+});
+
+export type UpdateRoleInput = z.infer<typeof updateRoleSchema>["body"];
+
+path src/schemas/comment.schema.ts
+import { z } from "zod";
+import { mongoIdRegex } from "../config/constants.js";
+
+export const createCommentSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid mod id format"),
+  }),
+  body: z
+    .object({
+      text: z.string().min(1, "cannot be empty").max(500, "too long"),
+      parentId: z.string().regex(mongoIdRegex).optional(),
+      replyTo: z.string().regex(mongoIdRegex).optional(),
+    })
+    .strict(),
+});
+
+export const getCommentsQuerySchema = z.object({
+  query: z.object({
+    parentId: z.string().regex(mongoIdRegex).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(50).default(10),
+  }),
+});
+
+export type CreateCommentInput = z.infer<typeof createCommentSchema>["body"];
+export type GetCommentsQueryInput = z.infer<
+  typeof getCommentsQuerySchema
+>["query"];
+
+export const patchCommentSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid comment id format"),
+  }),
+  body: z
+    .object({
+      text: z.string().min(1, "cannot be empty").max(500, "too long"),
+      replyTo: z.string().regex(mongoIdRegex).optional(),
+    })
+    .strict(),
+});
+
+export type PatchCommentInput = z.infer<typeof patchCommentSchema>["body"];
+
+export const deleteCommentSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid comment id format"),
+  }),
+});
+
+path src/schemas/mod.schema.ts
+import { z } from "zod";
+import { MOD_TAGS } from "../config/constants.js";
+import { mongoIdRegex } from "../config/constants.js";
+
+const modBodySchema = z.object({
+  title: z.string().min(3, "title too short").max(50, "title too long"),
+  description: z
+    .string()
+    .min(10, "description too short")
+    .max(1000, "description too long"),
+  version: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+$/, "version must be in semver format (e.g. 1.0.0)"),
+  tags: z.array(z.enum(MOD_TAGS)).min(1).optional(),
+});
+
+export const createModSchema = z.object({
+  body: modBodySchema,
+});
+
+export const patchModSchema = z.object({
+  body: modBodySchema.partial().strict(),
+});
+
+export type CreateModInput = z.infer<typeof createModSchema>["body"];
+export type PatchModInput = z.infer<typeof patchModSchema>["body"];
+
+export const getModIdSchema = z.object({
+  params: z.object({
+    id: z.string().regex(mongoIdRegex, "invalid mod id format"),
+  }),
+});
+
+export const getModQuerySchema = z.object({
+  query: z.object({
+    tag: z
+      .preprocess(
+        (val) => {
+          if (!val) return undefined;
+          return Array.isArray(val) ? val : [val];
+        },
+        z.array(z.enum(MOD_TAGS)),
+      )
+      .optional(),
+    search: z.string().max(50, "search queary too long").optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(10),
+    sort: z.enum(["newest", "oldest", "downloads", "title"]).default("newest"),
+  }),
+});
+
+export type GetModQueryInput = z.infer<typeof getModQuerySchema>["query"];
+
+path src/server.ts
+import app from "./app.js";
+import { connectDB } from "./config/db.js";
+import { ENV } from "./config/env.js";
+
+connectDB().then(() => {
+  app.listen(ENV.PORT, () => console.log("server started at port " + ENV.PORT));
+});
+
+path src/controllers/authController.ts
+import { Request, Response, NextFunction } from "express";
+import { RegisterInput, LoginInput } from "../schemas/user.schema.js";
+import { asyncHandler } from "../middlewares/asyncHandler.js";
+import { authService } from "../services/auth.service.js";
+
+const register = asyncHandler(
+  async (
+    req: Request<{}, {}, RegisterInput>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    const newUser = await authService.register(req.body);
+
+    res.status(201).json({
+      status: "success",
+      user: {
+        id: newUser._id,
+        username: newUser.username,
+        email: newUser.email,
+        role: newUser.role,
+      },
+    });
+  },
+);
+
+const login = asyncHandler(
+  async (
+    req: Request<{}, {}, LoginInput>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    const { user, token } = await authService.login(req.body);
+    return res.status(200).json({
+      status: "success",
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        role: user.role,
+      },
+    });
+  },
+);
+
+export const authController = {
+  register,
+  login,
+};
+
+path src/controllers/commentController.ts
+import { Request, Response } from "express";
+import { asyncHandler } from "../middlewares/asyncHandler.js";
+import { commentService } from "../services/comment.service.js";
+import {
+  CreateCommentInput,
+  PatchCommentInput,
+} from "../schemas/comment.schema.js";
+import { getCommentsQuerySchema } from "../schemas/comment.schema.js";
+
+const addComment = asyncHandler(
+  async (
+    req: Request<{ id: string }, {}, CreateCommentInput>,
+    res: Response,
+  ) => {
+    const comment = await commentService.create(
+      req.params.id,
+      req.user!.userId,
+      req.body,
+    );
+    return res.status(201).json({ status: "success", comment });
+  },
+);
+
+const patchComment = asyncHandler(
+  async (
+    req: Request<{ id: string }, {}, PatchCommentInput>,
+    res: Response,
+  ) => {
+    const { userId, role } = req.user!;
+    const comment = await commentService.patch(
+      req.params.id,
+      userId,
+      role,
+      req.body,
+    );
+    return res.status(203).json({ status: "success", comment });
+  },
+);
+
+const getComments = asyncHandler(
+  async (req: Request<{ id: string }>, res: Response) => {
+    const query = getCommentsQuerySchema.shape.query.parse(req.query);
+    const { comments, total, page, limit } = await commentService.list(
+      req.params.id,
+      query,
+    );
+
+    return res.status(200).json({
+      status: "success",
+      meta: {
+        totalResults: total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+      comments,
+    });
+  },
+);
+
+const deleteComment = asyncHandler(
+  async (req: Request<{ id: string }>, res: Response) => {
+    const commentId = req.params.id;
+    const { userId, role } = req.user!;
+
+    await commentService.remove(commentId, userId, role);
+
+    return res
+      .status(200)
+      .json({ status: "success", message: "comment deleted" });
+  },
+);
+
+export const commentController = {
+  addComment,
+  getComments,
+  patchComment,
+  deleteComment,
+};
+
+path src/controllers/modController.ts
+import { Request, Response } from "express";
+import {
+  CreateModInput,
+  PatchModInput,
+  getModQuerySchema,
+} from "../schemas/mod.schema.js";
+import { asyncHandler } from "../middlewares/asyncHandler.js";
+import { AppError } from "../utils/appError.js";
+import { modService } from "../services/mod.service.js";
+import path from "path";
+
+const downloadMod = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const mod = await modService.incDownload(id);
+
+  const fileExt = path.extname(mod.fileUrl);
+  const cleanFileName = `${mod.title}_v${mod.version}${fileExt}`;
+
+  return res.download(mod.fileUrl, cleanFileName);
+});
+
+const toggleLike = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const userId = req.user!.userId;
+
+  const result = await modService.toggleLike(id, userId);
+
+  return res.status(200).json({
+    status: "success",
+    data: result,
+  });
+});
+
+const createMod = asyncHandler(
+  async (req: Request<{}, {}, CreateModInput>, res: Response) => {
+    if (!req.file)
+      throw new AppError(400, "FILE_REQUIRED", "Please upload a mod file");
+
+    const authorId = req.user!.userId;
+    const fileUrl = req.file.path;
+
+    const newMod = await modService.create(req.body, authorId, fileUrl);
+
+    return res.status(201).json({
+      status: "success",
+      mod: newMod,
+    });
+  },
+);
+
+const getModById = asyncHandler(async (req: Request, res: Response) => {
+  const mod = await modService.modById(req.params.id);
+
+  return res.status(200).json({
+    status: "success",
+    mod,
+  });
+});
+
+const deleteMod = asyncHandler(
+  async (req: Request<{ id: string }>, res: Response) => {
+    const user = req.user!;
+    await modService.remove(req.params.id, user.userId, user.role);
+
+    return res.status(200).json({
+      status: "success",
+    });
+  },
+);
+
+const patchMod = asyncHandler(
+  async (req: Request<{ id: string }, {}, PatchModInput>, res: Response) => {
+    const user = req.user!;
+
+    const patchedMod = await modService.patch(
+      req.params.id,
+      req.body,
+      user.userId,
+      user.role,
+      req.file?.path,
+    );
+
+    return res.status(200).json({
+      status: "success",
+      mod: patchedMod,
+    });
+  },
+);
+
+const getAllMods = asyncHandler(async (req: Request, res: Response) => {
+  const query = getModQuerySchema.shape.query.parse(req.query);
+  const { mods, totalMods, page, limit } = await modService.list(
+    query,
+    {},
+    req.user?.userId,
+  );
+
+  return res.status(200).json({
+    status: "success",
+    meta: {
+      totalResults: totalMods,
+      page,
+      limit,
+      totalPages: Math.ceil(totalMods / limit),
+    },
+    mods,
+  });
+});
+
+export const modController = {
+  createMod,
+  getModById,
+  deleteMod,
+  patchMod,
+  getAllMods,
+  downloadMod,
+  toggleLike,
+};
+
+path src/controllers/userController.ts
+import { Request, Response } from "express";
+import { UpdateUserInput, UpdateRoleInput } from "../schemas/user.schema.js";
+import { asyncHandler } from "../middlewares/asyncHandler.js";
+import { userService } from "../services/user.service.js";
+import { getModQuerySchema } from "../schemas/mod.schema.js";
+
+const getMe = asyncHandler(async (req: Request, res: Response) => {
+  const user = await userService.find(req.user!.userId);
+  return res.status(200).json({
+    status: "success",
+    user,
+  });
+});
+
+const patchMe = asyncHandler(
+  async (req: Request<{}, {}, UpdateUserInput>, res: Response) => {
+    const updatedUser = await userService.patch(req.body, req.user!.userId);
+    return res.status(200).json({
+      status: "success",
+      user: updatedUser,
+    });
+  },
+);
+
+const getUser = asyncHandler(
+  async (req: Request<{ id: string }>, res: Response) => {
+    const { id } = req.params;
+    const user = await userService.find(id);
+    return res.status(200).json({
+      status: "success",
+      user,
+    });
+  },
+);
+
+const getUserMods = asyncHandler(
+  async (req: Request<{ id: string }>, res: Response) => {
+    const { id } = req.params;
+    const query = getModQuerySchema.shape.query.parse(req.query);
+
+    const { mods, totalMods, page, limit } = await userService.findMods(
+      id,
+      query,
+      req.user?.userId,
+    );
+    return res.status(200).json({
+      status: "success",
+      meta: {
+        totalResults: totalMods,
+        page,
+        limit,
+        totalPages: Math.ceil(totalMods / limit),
+      },
+      mods,
+    });
+  },
+);
+
+const updateRole = asyncHandler(
+  async (req: Request<{ id: string }, {}, UpdateRoleInput>, res: Response) => {
+    const { id } = req.params;
+    const user = await userService.updateRole(id, req.body.role);
+    res.status(200).json({
+      status: "success",
+      user,
+    });
+  },
+);
+
+export const userController = {
+  getMe,
+  patchMe,
+  getUser,
+  getUserMods,
+  updateRole,
+};
+
+path README.md
+# workshop-api
+
+A production-ready RESTful API backend for a game modification platform, built with Node.js, Express, TypeScript, and MongoDB. The system includes strict input validation, token-based authentication, role-based authorization, rate-limiting for auth endpoints, and safe file management.
+
+---
+
+## Tech Stack
+
+* **Runtime:** Node.js (v24+)
+* **Language:** TypeScript
+* **Framework:** Express.js
+* **Database:** MongoDB
+* **File Handling:** Multer
+* **Validation:** Zod
+* **Security:** Helmet, CORS, Bcrypt, JSON Web Tokens (JWT), Express Rate Limit
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+Node.js and MongoDB must be installed and running on your system.
+
+### Environment Configuration
+
+Create a `.env` file in the root directory. Note that the database URI variable name required by the application is `MONGO`.
+
+```env
+PORT=5000
+MONGO=mongodb://127.0.0.1:27017/workshop
+JWT_SECRET=your_jwt_secret_key
+NODE_ENV=development
+ALLOWED_ORIGIN=https://domain.com
+
+```
+
+### Installation
+
+Install the project dependencies:
+
+```bash
+npm install
+
+```
+
+### Running the Application
+
+* **Development Mode (with hot-reload):**
+```bash
+npm run dev
+
+```
+
+
+* **Production Build:**
+```bash
+npm run build
+
+```
+
+
+* **Production Run:**
+```bash
+npm start
+
+```
+
+
+
+---
+
+## Data Models
+
+### User Schema
+
+```typescript
+{
+  _id: ObjectId;
+  username: string;     // Unique, required, trimmed, 3-20 characters
+  passwordHash: string; // Required
+  email: string;        // Unique, required, valid email format
+  description: string;  // Optional, max 200 characters, default: ""
+  role: "user" | "moderator" | "admin"; // Default: "user"
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+```
+
+### Mod Schema
+
+```typescript
+{
+  _id: ObjectId;
+  title: string;        // Unique, required, 3-50 characters
+  description: string;  // Required, 10-1000 characters
+  version: string;      // Required, SemVer format (e.g., 1.0.0)
+  author: ObjectId;     // Reference to User model, required
+  tags: string[];       // Array of enums: "content" | "script" | "UI" | "qol" | "java" | "soundpack" | "texturepack"
+  fileUrl: string;      // Required, file path on disk
+  downloads: number;    // Default: 0
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+```
+
+### Like Schema
+
+```typescript
+{
+  userId: ObjectId      // Reference to User model, required
+  modId: ObjectId       // Reference to Mod model, required
+}
+```
+
+### Commnet Schema
+
+```typescript
+{
+  userId: ObjectId      // Reference to User model, required
+  modId: ObjectId       // Reference to Mod model, required
+  text: string          // 1-500 characters
+  parentId: ObjectId    // Reference to Comment model for threading, default null for root comment
+  replyTo: ObjectId     // Reference to User model, optional
+}
+```
+---
+
+## File Upload Specifications
+
+* **Allowed Extensions:** `.jar`, `.zip`, `.js`
+* **Maximum File Size:** 50MB
+* **Storage Location:** Local `./uploads` directory
+
+---
+
+## API Endpoints Documentation
+
+### Utility Endpoints
+
+| Method | Endpoint | Description | Auth Required | Expected Response |
+| --- | --- | --- | --- | --- |
+| `GET` | `/ping` | Health check endpoint | No | `200 OK` -> `{ "answer": "pong" }` |
+
+### Authentication (`/auth`)
+
+*Rate-limiting policy: Maximum of 20 requests per 15 minutes per IP.*
+
+| Method | Endpoint | Request Payload | Auth Required | Expected Response (Success) |
+| --- | --- | --- | --- | --- |
+| `POST` | `/auth/register` | JSON: `{ username, email, password }` | No | `201 Created` + User summary data |
+| `POST` | `/auth/login` | JSON: `{ email, password }` | No | `200 OK` + JWT Token and User info |
+
+### User Management (`/users`)
+
+| Method | Endpoint | Request Payload / Params | Auth Required | Expected Response (Success) |
+| --- | --- | --- | --- | --- |
+| `GET` | `/users/me` | None | JWT | `200 OK` + Current user profile (excludes password hash) |
+| `PATCH` | `/users/me` | JSON: `{ username?, description?, email? }` (Strict) | JWT | `200 OK` + Updated profile data |
+| `GET` | `/users/:id` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` + Public user profile |
+| `GET` | `/users/:id/mods` | Params: `id` <br>
+
+<br> Query: `?page=&limit=&sort=&tag=&search=` | No | `200 OK` + Paginated list of mods by this user |
+
+### Modification Management (`/mods`)
+
+| Method | Endpoint | Request Payload / Params | Auth Required | Expected Response (Success) |
+| --- | --- | --- | --- | --- |
+| `GET` | `/mods` | Query parameters:<br>
+
+<br>• `page` (default: 1)<br>
+
+<br>• `limit` (default: 10, max: 100)<br>
+
+<br>• `sort` (`newest` | `oldest` | `downloads` | `title`) <br>
+
+<br>• `tag` (one or multiple valid tags)<br>
+
+<br>• `search` (partial title match) | No | `200 OK` + Paginated array with meta statistics |
+| `POST` | `/mods` | Multipart/Form-Data:<br>
+
+<br>• `file` (binary archive)<br>
+
+<br>• fields: `{ title, description, version, tags? }` | JWT | `201 Created` + Complete Mod metadata object |
+| `GET` | `/mods/:id` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` + Target Mod details |
+| `PATCH` | `/mods/:id` | Multipart/Form-Data (Optional new `file`) <br>
+
+<br> JSON payload fields: partial mod parameters | JWT (Owner / Admin) | `200 OK` + Updated Mod information |
+| `DELETE` | `/mods/:id` | Params: `id` (24-char Hex ObjectId) | JWT (Owner / Admin) | `200 OK` (Deletes metadata and local file) |
+| `GET` | `/mods/:id/download` | Params: `id` (24-char Hex ObjectId) | No | `200 OK` (Streams binary attachment, increments counter) |
+
+---
+
+## Error Handling Structure
+
+All application errors pass through a centralized processing middleware. Standard API error payloads use the following structured format:
+
+```json
+{
+  "status": "error",
+  "code": "ERROR_CODE_STRING",
+  "message": "Detailed context-specific error explanation"
+}
+
+```
+
+### Handled Error Profiles
+
+* `AppError`: Custom application-level failures (e.g., `403 FORBIDDEN`, `401 NO_TOKEN`, `404 MOD_NOT_FOUND`).
+* `ZodError` / `ValidationError`: Request fields fail to match schema definitions. Contains an extra `errors` array mapping fields to validation failures.
+* `CastError`: Invalid database `ObjectId` strings passed to endpoints.
+* `MulterError`: Uploaded file exceeds limits or hits incorrect routing names.
+* `Mongo Error 11000`: Unique constraint violations (e.g., registering duplicate emails or titles).
+
+---
+
+## Author
+
+* Github: [TyT-xexebe](https://www.google.com/search?q=https://github.com/TyT-xexebe)
+
+---
+
+## License
+
+Copyright (c) 2026 TyTxexebe.
+This project is licensed under the MIT License.
+

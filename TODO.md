@@ -1,0 +1,3 @@
+- [x] Expand mod fields (likes, comments)
+- [ ] Add email verification
+- [ ] Add endpoint tests with Vitest

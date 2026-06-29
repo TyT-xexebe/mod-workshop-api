@@ -8,6 +8,7 @@ import fs from "fs";
 import cors from "cors";
 import helmet from "helmet";
 import { ENV } from "./config/env.js";
+import { globalLimiter } from "./middlewares/rateLimit.js";
 
 const app = express();
 
@@ -22,11 +23,13 @@ app.use(
 );
 app.use(helmet());
 
-app.use("/auth", authRoutes);
-app.use("/mods", modRoutes);
-app.use("/users", userRoutes);
+app.use("/api", globalLimiter);
 
-app.get("/ping", (req: Request, res: Response) => {
+app.use("/api/auth", authRoutes);
+app.use("/api/mods", modRoutes);
+app.use("/api/users", userRoutes);
+
+app.get("/api/ping", (req: Request, res: Response) => {
   res.json({ answer: "pong" });
 });
 

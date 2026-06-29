@@ -20,6 +20,18 @@ const downloadMod = asyncHandler(async (req: Request, res: Response) => {
   return res.download(mod.fileUrl, cleanFileName);
 });
 
+const toggleLike = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const userId = req.user!.userId;
+
+  const result = await modService.toggleLike(id, userId);
+
+  return res.status(200).json({
+    status: "success",
+    data: result,
+  });
+});
+
 const createMod = asyncHandler(
   async (req: Request<{}, {}, CreateModInput>, res: Response) => {
     if (!req.file)
@@ -78,7 +90,11 @@ const patchMod = asyncHandler(
 
 const getAllMods = asyncHandler(async (req: Request, res: Response) => {
   const query = getModQuerySchema.shape.query.parse(req.query);
-  const { mods, totalMods, page, limit } = await modService.list(query);
+  const { mods, totalMods, page, limit } = await modService.list(
+    query,
+    {},
+    req.user?.userId,
+  );
 
   return res.status(200).json({
     status: "success",
@@ -99,4 +115,5 @@ export const modController = {
   patchMod,
   getAllMods,
   downloadMod,
+  toggleLike,
 };

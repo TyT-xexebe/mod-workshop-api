@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { UpdateUserInput } from "../schemas/user.schema.js";
+import { UpdateUserInput, UpdateRoleInput } from "../schemas/user.schema.js";
 import { asyncHandler } from "../middlewares/asyncHandler.js";
 import { userService } from "../services/user.service.js";
 import { getModQuerySchema } from "../schemas/mod.schema.js";
@@ -41,6 +41,7 @@ const getUserMods = asyncHandler(
     const { mods, totalMods, page, limit } = await userService.findMods(
       id,
       query,
+      req.user?.userId,
     );
     return res.status(200).json({
       status: "success",
@@ -55,9 +56,21 @@ const getUserMods = asyncHandler(
   },
 );
 
+const updateRole = asyncHandler(
+  async (req: Request<{ id: string }, {}, UpdateRoleInput>, res: Response) => {
+    const { id } = req.params;
+    const user = await userService.updateRole(id, req.body.role);
+    res.status(200).json({
+      status: "success",
+      user,
+    });
+  },
+);
+
 export const userController = {
   getMe,
   patchMe,
   getUser,
   getUserMods,
+  updateRole,
 };

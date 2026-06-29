@@ -1,5 +1,6 @@
 export const ROLES = ["user", "moderator", "admin"] as const;
 export type UserRole = (typeof ROLES)[number];
+export const mongoIdRegex = /^[0-9a-fA-F]{24}$/;
 
 export const MOD_TAGS = [
   "content",

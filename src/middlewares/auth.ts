@@ -42,3 +42,37 @@ export const protect = asyncHandler(
     }
   },
 );
+
+export const optionalProtect = asyncHandler(
+  async (req: Request, res: Response, next: NextFunction) => {
+    let token: string | undefined;
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith("Bearer")
+    )
+      token = req.headers.authorization.split(" ")[1];
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, ENV.JWT_SECRET) as JwtPayload;
+        req.user = {
+          userId: decoded.userId,
+          role: decoded.role,
+        };
+      } catch (err) {}
+    }
+    next();
+  },
+);
+
+export const requireRole = (...roles: UserRole[]) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user || !roles.includes(req.user.role))
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "You dont have rightsto perform this action.",
+      );
+    next();
+  };
+};
