@@ -7,16 +7,28 @@ export interface IUser {
   description: string;
   email: string;
   role: UserRole;
+  isVerified: boolean;
+  verificationToken: string | null;
+  verificationTokenExpiredAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const userSchema = new Schema<IUser>(
   {
-    username: { type: String, required: true, unique: true, trim: true },
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      lowercase: true,
+    },
     passwordHash: { type: String, required: true },
     description: { type: String, trim: true, default: "" },
-    email: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true, lowercase: true },
+    isVerified: { type: Boolean, default: false },
+    verificationToken: { type: String, default: null },
+    verificationTokenExpiredAt: { type: Date, default: null },
     role: {
       type: String,
       enum: ROLES,

@@ -42,7 +42,27 @@ const login = asyncHandler(
   },
 );
 
+const verify = asyncHandler(
+  async (
+    req: Request<{}, {}, {}, { token: string }>,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    const { token } = req.query;
+    const user = await authService.verifyEmail(token);
+    res.status(200).json({
+      status: "success",
+      user: {
+        id: user._id,
+        username: user.username,
+        isVerified: user.isVerified,
+      },
+    });
+  },
+);
+
 export const authController = {
   register,
   login,
+  verify,
 };

@@ -31,7 +31,16 @@ PORT=5000
 MONGO=mongodb://127.0.0.1:27017/workshop
 JWT_SECRET=your_jwt_secret_key
 NODE_ENV=development
-ALLOWED_ORIGIN=https://domain.com
+ALLOWED_ORIGIN=http://localhost:3000
+APP_URL=http://localhost:5000
+
+# SMTP Email Configuration (Gmail example)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_16_char_app_password
+SMTP_FROM="Workshop Platform <your_email@gmail.com>"
 
 ```
 
@@ -47,25 +56,33 @@ npm install
 ### Running the Application
 
 * **Development Mode (with hot-reload):**
-
 ```bash
 npm run dev
 
 ```
 
-* **Production Build:**
 
+* **Production Build:**
 ```bash
 npm run build
 
 ```
 
-* **Production Run:**
 
+* **Production Run:**
 ```bash
 npm start
 
 ```
+
+
+* **Type Checking:**
+```bash
+npm run typecheck
+
+```
+
+
 
 ---
 
@@ -87,11 +104,14 @@ The application enforces differential rate limits via dedicated middlewares to p
 ```typescript
 {
   _id: ObjectId;
-  username: string;     // Unique, required, trimmed, 3-20 characters
-  passwordHash: string; // Required
-  email: string;        // Unique, required, valid email format
-  description: string;  // Optional, max 200 characters, default: ""
+  username: string;                   // Unique, required, trimmed, lowercase, 3-20 characters
+  passwordHash: string;               // Required
+  email: string;                      // Unique, required, lowercase, valid email format
+  description: string;                // Optional, max 200 characters, default: ""
   role: "user" | "moderator" | "admin"; // Default: "user"
+  isVerified: boolean;                // Default: false
+  verificationToken: string | null;   // SHA-256 hashed token or null
+  verificationTokenExpiredAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -166,8 +186,9 @@ The application enforces differential rate limits via dedicated middlewares to p
 
 | Method | Endpoint | Request Payload / Zod Validation | Auth Required | Rate Limiter | Expected Response (Success) |
 | --- | --- | --- | --- | --- | --- |
-| `POST` | `/api/auth/register` | **Body:** `{ username (3-20), email, password (min 6) }` | No | `authLimiter` | `201 Created` + User configuration data (excludes password) |
-| `POST` | `/api/auth/login` | **Body:** `{ email, password (min 6) }` | No | `authLimiter` | `200 OK` + JWT Token and User parameters |
+| `POST` | `/api/auth/register` | **Body:** `{ username (3-20), email, password (min 6) }` | No | `authLimiter` | `201 Created` + User data (requires email verification to log in) |
+| `GET` | `/api/auth/verify` | **Query:** `?token=raw_verification_token` | No | `authLimiter` | `200 OK` + JSON confirmation. Activates the user account. |
+| `POST` | `/api/auth/login` | **Body:** `{ email, password (min 6) }` | No | `authLimiter` | `200 OK` + JWT Token and User parameters (fails if email is unverified) |
 
 ### User Management (`/api/users`)
 
@@ -178,10 +199,14 @@ The application enforces differential rate limits via dedicated middlewares to p
 | `GET` | `/api/users/:id` | **Params:** `id` (24-char Hex ObjectId) | No | `globalLimiter` | `200 OK` + Public user profile |
 | `GET` | `/api/users/:id/mods` | **Params:** `id` (24-char Hex ObjectId) <br>
 
+<br>
+
 <br> **Query:** `?page=&limit=&sort=&tag=&search=` | No | `globalLimiter` | `200 OK` + Paginated mods created by this user |
 | `PATCH` | `/api/users/:id/role` | **Params:** `id` <br>
 
-<br> **Body (Strict):** `{ role: "user" | "moderator" | "admin" }` | JWT (Admin only) | `spamLimiter` | `200 OK` + Updated target user object |
+<br>
+
+<br> **Body (Strict):** `{ role: "user" | "moderator" | "admin" }` | JWT (Admin only) |
 
 ### Modification Management (`/api/mods`)
 
@@ -189,24 +214,42 @@ The application enforces differential rate limits via dedicated middlewares to p
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/api/mods` | **Query parameters:** <br>
 
+<br>
+
 <br> • `page` (default: 1) <br>
+
+<br>
 
 <br> • `limit` (default: 10, max: 100) <br>
 
+<br>
+
 <br> • `sort` (`newest` | `oldest` | `downloads` | `title`) <br>
+
+<br>
 
 <br> • `tag` (one or multiple valid tag enums) <br>
 
-<br> • `search` (partial match case-insensitive) | No (Optional JWT) | `globalLimiter` | `200 OK` + Paginated array with meta statistics and `isLiked` state |
+<br>
+
+<br> • `search` (partial match case-insensitive) |
 | `POST` | `/api/mods` | **Multipart/Form-Data:** <br>
 
+<br>
+
 <br> • `file` (binary archive payload) <br>
+
+<br>
 
 <br> • `body`: `{ title, description, version (SemVer), tags? }` | JWT | `uploadLimiter` | `201 Created` + Populated Mod metadata object |
 | `GET` | `/api/mods/:id` | **Params:** `id` (24-char Hex ObjectId) | No | `globalLimiter` | `200 OK` + Specified Mod details |
 | `PATCH` | `/api/mods/:id` | **Params:** `id` <br>
 
+<br>
+
 <br> **Multipart/Form-Data:** Optional binary `file` <br>
+
+<br>
 
 <br> **Body (Strict):** partial validation fields matching mod structure | JWT (Owner / Admin) | `uploadLimiter` | `200 OK` + Updated Mod information object |
 | `DELETE` | `/api/mods/:id` | **Params:** `id` (24-char Hex ObjectId) | JWT (Owner / Admin) | `globalLimiter` | `200 OK` (Removes document and local attachment completely) |
@@ -219,11 +262,17 @@ The application enforces differential rate limits via dedicated middlewares to p
 | --- | --- | --- | --- | --- | --- |
 | `POST` | `/api/mods/:id/comments` | **Params:** `id` (Mod id) <br>
 
+<br>
+
 <br> **Body (Strict):** `{ text (1-500), parentId?, replyTo? }` | JWT | `spamLimiter` | `201 Created` + New populated comment instance |
 | `GET` | `/api/mods/:id/comments` | **Params:** `id` (Mod id) <br>
 
+<br>
+
 <br> **Query:** `?parentId=&page=&limit=` | No | `globalLimiter` | `200 OK` + Balanced chronological array of comments with meta |
 | `PATCH` | `/api/mods/comments/:id` | **Params:** `id` (Comment id) <br>
+
+<br>
 
 <br> **Body (Strict):** `{ text (1-500), replyTo? }` | JWT (Owner / Admin) | `spamLimiter` | `203 Non-Authoritative Information` + Updated comment |
 | `DELETE` | `/api/mods/comments/:id` | **Params:** `id` (Comment id) | JWT (Owner / Admin) | `globalLimiter` | `200 OK` (Cascades and deletes child replies contextually) |
@@ -245,7 +294,7 @@ All application errors pass through a centralized processing middleware. Standar
 
 ### Handled Error Profiles
 
-* `AppError`: Custom application-level failures (e.g., `403 FORBIDDEN`, `401 NO_TOKEN`, `404 MOD_NOT_FOUND`).
+* `AppError`: Custom application-level failures (e.g., `403 FORBIDDEN`, `401 NO_TOKEN`, `404 MOD_NOT_FOUND`, `EMAIL_NOT_VERIFIED`).
 * `ZodError`: Request fields fail to match Zod validation schema parameters. Returns an `errors` array containing the specific `field` and `message`.
 * `mongoose.Error.ValidationError`: Mongoose schema state failures on database persistence operations.
 * `mongoose.Error.CastError`: Invalid database `ObjectId` parameter formats passed to core operations.
@@ -256,7 +305,7 @@ All application errors pass through a centralized processing middleware. Standar
 
 ## Author
 
-* Github: [TyT-xexebe](https://www.google.com/search?q=https://github.com/TyT-xexebe)
+* Github: [TyT-xexebe](https://github.com/TyT-xexebe)
 
 ---
 

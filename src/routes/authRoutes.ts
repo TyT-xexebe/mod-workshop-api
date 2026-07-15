@@ -13,5 +13,6 @@ router.post(
   authController.register,
 );
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
+router.get("/verify", authLimiter, authController.verify);
 
 export default router;

@@ -7,7 +7,8 @@
     "dev": "NODE_ENV=development tsx watch src/server.ts",
     "typecheck": "npx tsc --noEmit",
     "build": "tsc",
-    "start": "NODE_ENV=production node dist/server.js"
+    "start": "NODE_ENV=production node dist/server.js",
+    "prepare": "husky"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
@@ -19,7 +20,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.3.1",
     "multer": "^2.1.1",
-    "nodemailer": "^9.0.1",
+    "nodemailer": "^9.0.3",
     "zod": "^3.23.4"
   },
   "devDependencies": {
@@ -31,6 +32,7 @@
     "@types/node": "^20.12.7",
     "@types/nodemailer": "^8.0.1",
     "@types/supertest": "^7.2.0",
+    "husky": "^9.1.7",
     "mongodb-memory-server": "^11.2.0",
     "tsx": "^4.22.4",
     "typescript": "^5.4.5"
